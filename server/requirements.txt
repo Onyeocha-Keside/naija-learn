@@ -1,0 +1,13 @@
+# Pinned to what YarnGPT is tested with.
+transformers==4.47.1
+outetts==0.2.3
+uroman
+inflect
+accelerate
+bitsandbytes
+librosa
+soundfile
+fastapi
+uvicorn[standard]
+python-multipart
+gdown
