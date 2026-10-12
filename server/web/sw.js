@@ -1,4 +1,4 @@
-var CACHE = 'naija-learn-shell-v1';
+var CACHE = 'naija-learn-shell-v2';
 var SHELL = ['/', '/static/style.css', '/static/app.js', '/static/manifest.json', '/static/icon.svg', '/static/icon-192.png', '/static/icon-512.png', '/lessons', '/lessons/fractions', '/lessons/plants', '/lessons/verbs'];
 self.addEventListener('install', function (event) {
   event.waitUntil(caches.open(CACHE).then(function (cache) { return cache.addAll(SHELL); }));

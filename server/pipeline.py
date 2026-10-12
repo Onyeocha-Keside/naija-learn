@@ -3,6 +3,7 @@
 Run directly to test on a file:
     python pipeline.py sample.wav [--lang yoruba]
 """
+import gc
 import os
 import re
 import sys
@@ -28,7 +29,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "vendor"))  # setup.sh clones yarngpt here
 from yarngpt.audiotokenizer import AudioTokenizerV2  # noqa: E402
 
-DEVICE = "cuda"
+DEVICE = os.getenv("GPU_DEVICE", "cuda:0")
+ASR_DEVICE = os.getenv("ASR_DEVICE", DEVICE)
+TTS_DEVICE = os.getenv("TTS_DEVICE", DEVICE)
 DTYPE = torch.float16
 ASR_SR = 16_000
 TTS_SR = 24_000
@@ -71,11 +74,20 @@ class Result:
 class Pipeline:
     def __init__(self):
         t0 = time.time()
-        self._load_lid()
-        self._load_asr()
+        if not torch.cuda.is_available():
+            raise RuntimeError("An NVIDIA CUDA GPU is required for the tutor.")
+        vram_gb = torch.cuda.get_device_properties(DEVICE).total_memory / 1e9
+        setting = os.getenv("LOW_VRAM", "auto")
+        self.low_vram = vram_gb < 20 if setting == "auto" else setting == "1"
+        self.asr_cache_size = 1 if self.low_vram else len(LANGS)
+        self.lid = None
+        self.asr = {}
+        if not self.low_vram:
+            self._load_lid()
+            self._load_asr()
         self._load_llm()
         self._load_tts()
-        print(f"[pipeline] all models loaded in {time.time() - t0:.0f}s")
+        print(f"[pipeline] ready in {time.time() - t0:.0f}s (low VRAM: {self.low_vram}; ASR loads on demand)")
 
     # ---------- loading ----------
 
@@ -87,15 +99,27 @@ class Pipeline:
         self.lid_ids = {lang: label2id[code] for code, lang in LID_CODES.items()}
 
     def _load_asr(self):
-        self.asr = {}
-        for lang, name in ASR_MODELS.items():
-            proc = WhisperProcessor.from_pretrained(name)
-            model = WhisperForConditionalGeneration.from_pretrained(name, torch_dtype=DTYPE).to(DEVICE).eval()
+        for lang in LANGS:
+            self._get_asr(lang)
+
+    def _get_asr(self, lang):
+        if lang not in LANGS:
+            raise ValueError("Choose a supported language.")
+        if lang not in self.asr:
+            # A free T4 can keep one recogniser resident instead of all four.
+            while len(self.asr) >= self.asr_cache_size:
+                del self.asr[next(iter(self.asr))]
+                gc.collect()
+                with torch.cuda.device(ASR_DEVICE):
+                    torch.cuda.empty_cache()
+            proc = WhisperProcessor.from_pretrained(ASR_MODELS[lang])
+            model = WhisperForConditionalGeneration.from_pretrained(ASR_MODELS[lang], torch_dtype=DTYPE).to(ASR_DEVICE).eval()
             self.asr[lang] = (proc, model)
+        return self.asr[lang]
 
     def _load_llm(self):
         self.llm_tok = AutoTokenizer.from_pretrained(LLM_MODEL)
-        vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        vram_gb = torch.cuda.get_device_properties(DEVICE).total_memory / 1e9
         # 8B in fp16 is ~16 GB; on a 24 GB card that leaves too little room for the rest.
         use_4bit = os.getenv("LLM_4BIT", "auto")
         use_4bit = vram_gb < 40 if use_4bit == "auto" else use_4bit == "1"
@@ -111,12 +135,17 @@ class Pipeline:
 
     def _load_tts(self):
         self.tts_tok = AudioTokenizerV2(TTS_MODEL, WAVTOKENIZER_CKPT, WAVTOKENIZER_CONFIG)
-        self.tts = AutoModelForCausalLM.from_pretrained(TTS_MODEL, torch_dtype="auto").to(DEVICE).eval()
+        # T4 GPUs need fp16 rather than the model's default bfloat16.
+        self.tts_tok.device = torch.device(TTS_DEVICE)
+        self.tts_tok.wavtokenizer = self.tts_tok.wavtokenizer.to(TTS_DEVICE).eval()
+        self.tts = AutoModelForCausalLM.from_pretrained(TTS_MODEL, torch_dtype=DTYPE).to(TTS_DEVICE).eval()
 
     # ---------- stages ----------
 
     @torch.inference_mode()
     def detect_language(self, audio: np.ndarray) -> tuple[str, dict]:
+        if self.lid is None:
+            self._load_lid()
         inputs = self.lid_fe(audio, sampling_rate=ASR_SR, return_tensors="pt").to(DEVICE)
         logits = self.lid(input_values=inputs.input_values.to(DTYPE)).logits[0]
         sub = torch.stack([logits[i] for i in self.lid_ids.values()]).float().softmax(-1)
@@ -125,8 +154,8 @@ class Pipeline:
 
     @torch.inference_mode()
     def transcribe(self, audio: np.ndarray, lang: str) -> str:
-        proc, model = self.asr[lang]
-        feats = proc(audio, sampling_rate=ASR_SR, return_tensors="pt").input_features.to(DEVICE, DTYPE)
+        proc, model = self._get_asr(lang)
+        feats = proc(audio, sampling_rate=ASR_SR, return_tensors="pt").input_features.to(ASR_DEVICE, DTYPE)
         ids = model.generate(feats, max_new_tokens=200)
         return proc.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
@@ -142,7 +171,7 @@ class Pipeline:
         inputs = self.llm_tok(text, return_tensors="pt", add_special_tokens=False).to(DEVICE)
         out = self.llm.generate(
             **inputs,
-            max_new_tokens=int(os.getenv("LLM_MAX_TOKENS", "150")),
+            max_new_tokens=int(os.getenv("LLM_MAX_TOKENS", "80")),
             do_sample=True,
             temperature=0.1,
             repetition_penalty=1.12,
@@ -179,7 +208,8 @@ class Pipeline:
         def timed(name, fn, *args):
             t = time.time()
             out = fn(*args)
-            torch.cuda.synchronize()
+            for device in {DEVICE, ASR_DEVICE, TTS_DEVICE}:
+                torch.cuda.synchronize(device)
             timings[name] = round(time.time() - t, 2)
             return out
 

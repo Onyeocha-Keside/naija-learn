@@ -24,6 +24,7 @@ if [ -z "${HF_TOKEN:-}" ]; then
 fi
 
 # Pre-download all weights so the first request isn't slow.
+if [ "${DOWNLOAD_ALL_MODELS:-1}" = "1" ]; then
 python - <<'PY'
 from huggingface_hub import snapshot_download
 for repo in ["NCAIR1/Yoruba-ASR", "NCAIR1/Hausa-ASR", "NCAIR1/Igbo-ASR",
@@ -35,4 +36,5 @@ for repo in ["NCAIR1/Yoruba-ASR", "NCAIR1/Hausa-ASR", "NCAIR1/Igbo-ASR",
         skip.append("pytorch_model.bin")  # same weights as model.safetensors
     snapshot_download(repo, ignore_patterns=skip)
 PY
+fi
 echo "Setup done. Start the server with:  uvicorn app:app --host 127.0.0.1 --port 8000"

@@ -2,8 +2,8 @@
 var assert = require('node:assert/strict');
 var vm = require('node:vm');
 var fs = require('node:fs');
-function setup(enhanced, microphone) {
-  var elements = {}, requests = [];
+function setup(enhanced, microphone, fakeTimers) {
+  var elements = {}, requests = [], timers = [];
   ['learn-form','status','connection','voice-tools','audio-option','submit','record','send-file','lang','subject','level','mode','question','spoken','answer','playback','transcript','reply','audio-file','voice-help'].forEach(function (id) {
     elements[id] = {hidden:true, disabled:false, value:'', textContent:'', checked:true, handlers:{},
       addEventListener:function (key, fn) { this.handlers[key]=fn; }, querySelectorAll:function () { return []; },
@@ -23,8 +23,8 @@ function setup(enhanced, microphone) {
     Recorder.prototype.stop=function(){this.state='inactive'; this.ondataavailable({data:new Blob(['audio'])}); if(this.onstop){this.onstop();}};
     window.MediaRecorder=Recorder;
   }
-  vm.runInNewContext(fs.readFileSync('server/web/app.js','utf8'), {document:{getElementById:function(id){return elements[id];}},window:window,navigator:navigator,FormData:Data,XMLHttpRequest:XHR,MediaRecorder:window.MediaRecorder,Blob:Blob,setTimeout:setTimeout,clearTimeout:clearTimeout});
-  return {e:elements, requests:requests, navigator:navigator};
+  vm.runInNewContext(fs.readFileSync('server/web/app.js','utf8'), {document:{getElementById:function(id){return elements[id];}},window:window,navigator:navigator,FormData:Data,XMLHttpRequest:XHR,MediaRecorder:window.MediaRecorder,Blob:Blob,setTimeout:fakeTimers ? function(fn){timers.push(fn);return timers.length;} : setTimeout,clearTimeout:clearTimeout});
+  return {e:elements, requests:requests, navigator:navigator,timers:timers};
 }
 var basic=setup(false);
 assert.equal(basic.e['learn-form'].handlers.submit, undefined, 'basic form keeps native submission');
@@ -62,3 +62,26 @@ console.log('Web behaviour checks passed: basic form, text request, rendering, r
   assert.equal(voice.e.record.disabled, false);
   console.log('Recording behaviour checks passed: start, stop, upload and spoken reply.');
 }()).catch(function (error) { console.error(error); process.exitCode = 1; });
+
+var queued = setup(true, false, true);
+queued.e.question.value = 'Explain fractions';
+queued.e['learn-form'].handlers.submit({preventDefault:function(){}});
+assert.equal(queued.requests[0].data.values.queued, 'true');
+queued.requests[0].status = 202; queued.requests[0].responseText = JSON.stringify({id:'abc',state:'pending'});
+queued.requests[0].onload();
+assert.equal(queued.requests[1].url,'/jobs/abc?format=json');
+queued.requests[1].status = 200; queued.requests[1].responseText = JSON.stringify({state:'pending'});
+queued.requests[1].onload();
+assert.equal(queued.e.submit.disabled,true,'polling keeps duplicate requests disabled');
+queued.timers.shift()();
+queued.requests[2].status = 200; queued.requests[2].responseText = JSON.stringify({state:'done',result:{transcript:'Question',reply:'Answer',audio_b64:'AA=='}});
+queued.requests[2].onload();
+assert.equal(queued.e.playback.hidden,false);
+assert.match(queued.e.status.textContent,/Press Play/);
+assert.equal(queued.e.submit.disabled,false);
+var gateway = setup(true);
+gateway.e.question.value='Question';gateway.e['learn-form'].handlers.submit({preventDefault:function(){}});
+gateway.requests[0].status=524;gateway.requests[0].responseText='<html>Timeout</html>';gateway.requests[0].onload();
+assert.match(gateway.e.status.textContent,/HTTP 524/);
+assert.equal(gateway.e.submit.disabled,false);
+console.log('Queue regression checks passed: pending polls, final speech player and non-JSON tunnel errors.');

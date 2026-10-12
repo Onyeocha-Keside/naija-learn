@@ -143,6 +143,37 @@ class LearningTests(unittest.TestCase):
             self.assertIn('not enabled', response.json()['detail'])
             self.assertEqual(self.client.get('/lessons').status_code, 200)
 
+    def test_queued_voice_returns_before_gpu_work(self):
+        with patch.object(backend.executor, 'submit'):
+            r = self.client.post('/talk', files={'audio': ('question.wav', wav())}, data={'queued': 'true', 'with_audio': 'false'})
+        self.assertEqual(r.status_code, 202)
+        job_id = r.json()['id']
+        try:
+            self.assertEqual(backend.jobs[job_id]['question'], 'Voice question')
+            result = self.client.get('/jobs/' + job_id + '?format=json')
+            self.assertEqual(result.json(), {'state': 'pending'})
+            self.assertEqual(result.headers['cache-control'], 'no-store')
+        finally:
+            backend.jobs.pop(job_id)
+            backend.job_slots.release()
+
+    def test_queued_text_result_and_expiry(self):
+        r = self.client.post('/learn', data={'question': 'Explain halves', 'queued': 'true'})
+        self.assertEqual(r.status_code, 202)
+        job_id = r.json()['id']
+        result = self.client.get('/jobs/' + job_id + '?format=json').json()
+        self.assertEqual(result['state'], 'done')
+        self.assertIn('Two equal parts', result['result']['reply'])
+        backend.jobs[job_id]['updated'] -= backend.JOB_TTL + 1
+        self.assertEqual(self.client.get('/jobs/' + job_id + '?format=json').status_code, 404)
+
+    def test_failed_voice_job_is_reported_as_json(self):
+        with patch.object(backend, 'decode_audio', side_effect=backend.HTTPException(400, 'Could not read recording')):
+            r = self.client.post('/talk', files={'audio': ('bad', b'bad')}, data={'queued': 'true'})
+        result = self.client.get('/jobs/' + r.json()['id'] + '?format=json').json()
+        self.assertEqual(result['state'], 'failed')
+        self.assertEqual(result['detail'], 'Could not read recording')
+
     def test_learning_prompt(self):
         prompt = tutor_prompt('Igbo', 'maths', 'junior', 'practice')
         self.assertIn('Reply only in Igbo', prompt)

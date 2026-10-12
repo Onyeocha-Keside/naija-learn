@@ -14,7 +14,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from learning import LANGS, SUBJECTS, LEVELS, MODES
@@ -131,24 +131,30 @@ def health():
 
 @app.post("/talk")
 async def talk(audio: UploadFile = File(...), lang: str | None = Form(None), subject: str = Form("general"),
-               level: str = Form("primary"), mode: str = Form("explain"), with_audio: bool = Form(True)):
+               level: str = Form("primary"), mode: str = Form("explain"), with_audio: bool = Form(True), queued: bool = Form(False)):
     options(lang, subject, level, mode, auto=True)
     raw = await audio.read(MAX_UPLOAD + 1)
     await audio.close()
     if len(raw) > MAX_UPLOAD:
         raise HTTPException(413, "Recording is too large. Use a file under 4 MB.")
+    if queued:
+        job_id = enqueue(raw, lang, subject, level, mode, with_audio, kind="voice")
+        return JSONResponse({"id": job_id, "state": "pending"}, status_code=202, headers={"Cache-Control": "no-store"})
     return await run_in_threadpool(infer, "voice", raw, lang, subject, level, mode, with_audio)
 
 
 @app.post("/learn")
 async def learn(question: str = Form(...), lang: str = Form("english"), subject: str = Form("general"),
                 level: str = Form("primary"), mode: str = Form("explain"), with_audio: bool = Form(False),
-                format: str = Form("json")):
+                format: str = Form("json"), queued: bool = Form(False)):
     try:
         options(lang, subject, level, mode)
         question = question.strip()
         if not question or len(question) > 1000:
             raise HTTPException(400, "Enter a question between 1 and 1,000 characters.")
+        if queued:
+            job_id = enqueue(question, lang, subject, level, mode, with_audio)
+            return JSONResponse({"id": job_id, "state": "pending"}, status_code=202, headers={"Cache-Control": "no-store"})
         if format == "html":
             job_id = enqueue(question, lang, subject, level, mode, with_audio)
             return RedirectResponse("/jobs/" + job_id, status_code=303)
@@ -167,7 +173,7 @@ def basic_page(question, reply):
             '</h2><p>' + html.escape(reply) + '</p><p>Check important facts with your teacher or learning materials.</p></main></body></html>')
 
 
-def enqueue(question, lang, subject, level, mode, with_audio):
+def enqueue(question, lang, subject, level, mode, with_audio, kind="text"):
     if not job_slots.acquire(blocking=False):
         raise HTTPException(503, "The tutor queue is full. Read a lesson and try again shortly.")
     job_id = uuid.uuid4().hex
@@ -182,9 +188,9 @@ def enqueue(question, lang, subject, level, mode, with_audio):
             if not finished:
                 break
             del jobs[finished[0]]
-        jobs[job_id] = {"state": "pending", "question": question, "updated": now}
+        jobs[job_id] = {"state": "pending", "question": question if kind == "text" else "Voice question", "updated": now}
     try:
-        executor.submit(complete_job, job_id, question, lang, subject, level, mode, with_audio)
+        executor.submit(complete_job, job_id, question, lang, subject, level, mode, with_audio, kind)
     except RuntimeError:
         with job_lock:
             jobs.pop(job_id, None)
@@ -193,9 +199,9 @@ def enqueue(question, lang, subject, level, mode, with_audio):
     return job_id
 
 
-def complete_job(job_id, question, lang, subject, level, mode, with_audio):
+def complete_job(job_id, question, lang, subject, level, mode, with_audio, kind="text"):
     try:
-        result = infer("text", question, lang, subject, level, mode, with_audio)
+        result = infer(kind, question, lang, subject, level, mode, with_audio)
         update = {"state": "done", "result": result}
     except HTTPException as exc:
         update = {"state": "failed", "error": str(exc.detail)}
@@ -209,14 +215,23 @@ def complete_job(job_id, question, lang, subject, level, mode, with_audio):
 
 
 @app.get("/jobs/{job_id}")
-def job_page(job_id: str):
+def job_page(job_id: str, format: str = "html"):
     with job_lock:
         job = jobs.get(job_id)
         if not job or (job["state"] != "pending" and time.monotonic() - job["updated"] > JOB_TTL):
             jobs.pop(job_id, None)
+            if format == "json":
+                return JSONResponse({"detail": "This answer expired or the server restarted. Please ask again."}, status_code=404, headers={"Cache-Control": "no-store"})
             return HTMLResponse(basic_page("Answer unavailable", "This answer expired or the server restarted. Please ask again."), status_code=404, headers={"Cache-Control": "no-store"})
         job = dict(job)
     headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+    if format == "json":
+        payload = {"state": job["state"]}
+        if job["state"] == "done":
+            payload["result"] = job["result"]
+        elif job["state"] == "failed":
+            payload["detail"] = job["error"]
+        return JSONResponse(payload, headers=headers)
     if job["state"] == "pending":
         page = basic_page("Thinking…", "Your question is queued. This page checks again every four seconds. You can also use the link below.")
         page = page.replace('<title>', '<meta http-equiv="refresh" content="4"><title>', 1)

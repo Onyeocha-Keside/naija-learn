@@ -3,7 +3,7 @@
   'use strict';
   var form = document.getElementById('learn-form');
   var status = document.getElementById('status');
-  var recorder = null, stream = null, timer = null, busy = false, recording = false;
+  var recorder = null, stream = null, timer = null, pollTimer = null, busy = false, recording = false;
   var canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
   function el(id) { return document.getElementById(id); }
   function connection() { el('connection').hidden = navigator.onLine !== false; }
@@ -20,25 +20,53 @@
   function data() {
     var d = new FormData();
     ['lang', 'subject', 'level', 'mode'].forEach(function (key) { d.append(key, el(key).value); });
+    d.append('queued', 'true');
     d.append('with_audio', el('spoken').checked ? 'true' : 'false');
     return d;
+  }
+  function showAnswer(r) {
+    lock(false);
+    el('transcript').textContent = 'Your question: ' + r.transcript;
+    el('reply').textContent = r.reply;
+    if (r.audio_b64) { el('playback').src = 'data:audio/wav;base64,' + r.audio_b64; el('playback').hidden = false; }
+    el('answer').hidden = false;
+    status.textContent = r.audio_b64 ? 'Your answer is ready. Press Play below to hear it.' : 'Your text answer is ready.';
+    el('answer').focus();
+  }
+  function unreadable(xhr) {
+    lock(false);
+    status.textContent = 'The connection returned a webpage instead of an answer (HTTP ' + xhr.status + '). The tunnel may have timed out or your login expired. Refresh this page and check the Kaggle server log.';
+  }
+  function poll(id, started) {
+    if (Date.now() - started > 900000) { lock(false); status.textContent = 'The tutor is taking too long. Check the Kaggle server log before trying again.'; return; }
+    var xhr = new XMLHttpRequest(); xhr.open('GET', '/jobs/' + encodeURIComponent(id) + '?format=json', true); xhr.timeout = 30000;
+    xhr.onload = function () {
+      var r;
+      try { r = JSON.parse(xhr.responseText); } catch (e) { unreadable(xhr); return; }
+      if (xhr.status !== 200 || r.state === 'failed') { lock(false); status.textContent = typeof r.detail === 'string' ? r.detail : 'Could not retrieve this answer. Check the server log.'; return; }
+      if (r.state === 'done') { showAnswer(r.result); return; }
+      if (r.state !== 'pending') { unreadable(xhr); return; }
+      status.textContent = 'Your question is queued or processing. The first voice request may download its speech model. Please wait; you do not need to record again.';
+      pollTimer = setTimeout(function () { poll(id, started); }, 4000);
+    };
+    xhr.onerror = xhr.ontimeout = function () {
+      status.textContent = 'Connection interrupted. Checking your existing question again…';
+      pollTimer = setTimeout(function () { poll(id, started); }, 4000);
+    };
+    xhr.send();
   }
   function send(url, d) {
     if (busy) { return; }
     if (navigator.onLine === false) { status.textContent = 'Connect to the internet to ask the tutor. Your question is still here.'; return; }
-    lock(true); status.textContent = 'The tutor is preparing your answer. The first request may take longer while models load.';
+    lock(true); status.textContent = 'Sending your question…';
     el('answer').hidden = true; el('playback').pause(); el('playback').removeAttribute('src'); el('playback').hidden = true;
     var xhr = new XMLHttpRequest(); xhr.open('POST', url, true); xhr.timeout = 300000;
     xhr.onload = function () {
-      lock(false);
-      try {
-        var r = JSON.parse(xhr.responseText);
-        if (xhr.status !== 200) { status.textContent = typeof r.detail === 'string' ? r.detail : 'Could not send this question. Please check your input and try again.'; return; }
-        el('transcript').textContent = 'Your question: ' + r.transcript;
-        el('reply').textContent = r.reply;
-        if (r.audio_b64) { el('playback').src = 'data:audio/wav;base64,' + r.audio_b64; el('playback').hidden = false; }
-        el('answer').hidden = false; status.textContent = 'Your answer is ready.'; el('answer').focus();
-      } catch (e) { status.textContent = 'The server returned an unreadable response. Please try again.'; }
+      var r;
+      try { r = JSON.parse(xhr.responseText); } catch (e) { unreadable(xhr); return; }
+      if (xhr.status === 202 && r.id) { poll(r.id, Date.now()); return; }
+      if (xhr.status !== 200) { lock(false); status.textContent = typeof r.detail === 'string' ? r.detail : 'Could not send this question. Please check your input and try again.'; return; }
+      showAnswer(r);
     };
     xhr.onerror = xhr.ontimeout = function () { lock(false); status.textContent = 'The connection failed or took too long. Your question is still here; please try again.'; };
     xhr.send(d);
@@ -91,5 +119,5 @@
       }).catch(function () { el('record').disabled = false; status.textContent = 'Microphone access was unavailable. You can upload audio or type your question.'; });
     });
   }
-  window.addEventListener('pagehide', function () { if (recorder && recorder.state === 'recording') { recorder.onstop = null; recorder.stop(); } cleanup(); });
+  window.addEventListener('pagehide', function () { clearTimeout(pollTimer); if (recorder && recorder.state === 'recording') { recorder.onstop = null; recorder.stop(); } cleanup(); });
 }());
