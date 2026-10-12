@@ -1,0 +1,4 @@
+# Run the web interface and lessons without downloading the GPU model stack.
+fastapi==0.115.12
+uvicorn==0.34.3
+python-multipart==0.0.20

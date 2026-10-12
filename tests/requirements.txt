@@ -1,0 +1,6 @@
+# CPU-only API verification; model dependencies are not needed.
+fastapi==0.115.12
+pydantic==2.12.5
+python-multipart==0.0.20
+httpx==0.28.1
+numpy==2.3.5

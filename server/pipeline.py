@@ -22,6 +22,8 @@ from transformers import (
     WhisperProcessor,
 )
 
+from learning import LANGS, tutor_prompt
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "vendor"))  # setup.sh clones yarngpt here
 from yarngpt.audiotokenizer import AudioTokenizerV2  # noqa: E402
@@ -30,8 +32,6 @@ DEVICE = "cuda"
 DTYPE = torch.float16
 ASR_SR = 16_000
 TTS_SR = 24_000
-
-LANGS = ["english", "yoruba", "hausa", "igbo"]
 
 # MMS-LID ISO codes for the 4 languages we support.
 LID_CODES = {"eng": "english", "yor": "yoruba", "hau": "hausa", "ibo": "igbo"}
@@ -56,13 +56,6 @@ LID_MODEL = "facebook/mms-lid-126"
 TTS_MODEL = "saheedniyi/YarnGPT2"
 WAVTOKENIZER_CONFIG = os.path.join(HERE, "vendor", "wavtokenizer_mediumdata_frame75_3s_nq1_code4096_dim512_kmeans200_attn.yaml")
 WAVTOKENIZER_CKPT = os.path.join(HERE, "vendor", "wavtokenizer_large_speech_320_24k.ckpt")
-
-SYSTEM_PROMPT = (
-    "You are a friendly voice assistant for Nigerians, speaking through a smart speaker. "
-    "The user is speaking {language}. You MUST reply only in {language}. "
-    "Keep replies short: 1 to 3 sentences, because they will be read aloud. "
-    "No lists, no markdown, no emojis."
-)
 
 
 @dataclass
@@ -138,9 +131,9 @@ class Pipeline:
         return proc.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
     @torch.inference_mode()
-    def respond(self, transcript: str, lang: str) -> str:
+    def respond(self, transcript: str, lang: str, subject="general", level="primary", mode="explain") -> str:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT.format(language=lang.capitalize())},
+            {"role": "system", "content": tutor_prompt(lang.capitalize(), subject, level, mode)},
             {"role": "user", "content": transcript},
         ]
         text = self.llm_tok.apply_chat_template(
@@ -180,7 +173,7 @@ class Pipeline:
 
     # ---------- full turn ----------
 
-    def run(self, audio: np.ndarray, force_lang: str | None = None) -> Result:
+    def run(self, audio: np.ndarray, force_lang: str | None = None, subject="general", level="primary", mode="explain", with_audio=True) -> Result:
         timings = {}
 
         def timed(name, fn, *args):
@@ -195,8 +188,10 @@ class Pipeline:
         else:
             lang, scores = timed("lid", self.detect_language, audio)
         transcript = timed("asr", self.transcribe, audio, lang)
-        reply = timed("llm", self.respond, transcript, lang)
-        out_audio = timed("tts", self.speak, reply, lang)
+        if not transcript:
+            raise ValueError("No speech was recognised. Try again or type your question.")
+        reply = timed("llm", self.respond, transcript, lang, subject, level, mode)
+        out_audio = timed("tts", self.speak, reply, lang) if with_audio else np.zeros(0, dtype=np.float32)
         timings["total"] = round(sum(timings.values()), 2)
         return Result(lang, scores, transcript, reply, out_audio, timings)
 

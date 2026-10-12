@@ -1,7 +1,69 @@
-# Nigerian Voice Assistant — Phase 1 prototype
+# Naija Learn — voice-first education PWA
 
-Speak Yoruba, Hausa, Igbo, or Nigerian English into your laptop; hear a reply in the same language.
-See [PRD.md](PRD.md) for the plan.
+Ask learning questions in Yoruba, Hausa, Igbo or Nigerian English and read or hear an answer in the same language. A buildless phone web interface is served by FastAPI. The earlier smart-speaker PRD is historical; this README describes the current education implementation.
+
+## Local preview without a GPU
+
+Use Python 3.12 for the verified web setup. From the repository root:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r server/web-requirements.txt
+cd server
+TUTOR_ENABLED=0 uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://localhost:8000`. The interface, lessons and quizzes work; tutor requests explain that inference is disabled. This mode does not simulate AI answers. For real voice/text tutoring, use the full GPU setup below and leave `TUTOR_ENABLED` at its default of `1`.
+
+## Phone web app
+
+Start the server from `server/`:
+
+```bash
+uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://localhost:8000` on the laptop (the documented SSH tunnel still works). For a phone, deploy the GPU server behind an HTTPS reverse proxy and open its URL. Phone microphone access and PWA installation need a supported browser and HTTPS. An SSH tunnel on the laptop does not make the app accessible to other phones.
+
+- Choose language, subject, learning level and explanation / practice / answer-checking mode.
+- Record up to 60 seconds or upload an audio file under 4 MB. FFmpeg (installed by `setup.sh`) decodes WAV, WebM/Opus and other supported phone formats.
+- Type a question if recording is unavailable. The standard text form also works without JavaScript.
+- Turn off spoken answers for lower data use. Text-only requests skip speech synthesis.
+- Install through the browser where supported. The app shell and three English starter lessons are cached after the first visit; AI answers and quiz submissions require connectivity; offline mode supports reading cached lessons only. Personal answers and recordings are not cached by the service worker.
+- Read `/lessons` and submit the three starter quizzes without JavaScript or GPU inference.
+- On basic browsers, text questions redirect to a queued thinking page that checks every four seconds. Results expire after 15 minutes; server restarts clear them. Use one Uvicorn worker for this process-local pilot queue.
+- Each turn is independent. For answer checking, include the original question and your attempt.
+
+Feature-phone support is progressive: basic HTML forms first, optional audio and PWA features where supported. Actual target-device testing remains necessary. The interface labels and starter lessons currently use English; the tutor supports the four selected response languages. No curriculum certification, retrieval corpus, learner accounts or conversation memory is implemented.
+
+Models load on the first inference request, so the interface can start without CUDA, model weights or the YarnGPT vendor files. `/health` reports web-server availability and `models_loaded`; it does not certify inference readiness. Full inference still needs the GPU setup below. A single inference lock protects GPU memory; concurrent requests receive a retry message.
+
+## Relationship to the v2 technical design
+
+`Feature_Phone_Learning_App_Technical_Design.docx` is the larger phased design being developed separately. This implementation is the first working slice in the existing FastAPI repository: phone interface, PWA shell, English starter lessons and quizzes, education tutor options, and a bounded basic-browser text-job queue. It does not yet implement the proposed Django migration, accounts/guardian consent flows, SMS, teacher dashboards, BKT/Leitner progress, reviewed multilingual content, RAG, distributed workers, prerecorded lesson audio or measured 2G performance targets. The existing model stack and laptop smoke-test client are retained.
+
+## API
+
+- `POST /learn`: form fields `question` (1–1,000 characters), `lang`, `subject`, `level`, `mode`, `with_audio` (default false), `format` (`json` or `html`).
+- `POST /talk`: multipart `audio`, optional `lang` (omitted means automatic detection), and the same learning options; `with_audio` defaults true for the existing laptop client.
+- Subjects: `general`, `maths`, `english`, `science`, `social`. Levels: `primary`, `junior`, `everyday`. Modes: `explain`, `practice`, `check`.
+
+Server content logging is off by default. With informed tester consent, set `SAVE_TURNS=1` to append transcripts, answers and timings to `server/logs/turns.jsonl`. Raw input recordings are not retained by this version. Avoid putting personal details in questions. This is a prototype without accounts or rate limiting; use controlled pilot access before a public rollout.
+
+## Verification
+
+API tests use a fake tutor (no model downloads) and real FFmpeg decoding when available:
+
+```bash
+pip install -r tests/requirements.txt
+python -m unittest discover -s tests -v
+node --check server/web/app.js
+node --check server/web/sw.js
+node tests/test_web.js
+```
+
+These checks verify routes, basic-browser HTML escaping, text-only inference, validation, concurrency, prompt selection, queued basic-browser answers, lesson quizzes and browser-audio decoding. They do not establish language quality or real feature-phone compatibility.
 
 ```
 laptop (client/talk.py)  ──HTTP over SSH tunnel──►  GPU box (server/)
@@ -40,7 +102,7 @@ python pipeline.py some_audio.wav
 # start the server:
 uvicorn app:app --host 127.0.0.1 --port 8000
 ```
-First start takes ~1–2 min to load all models into the GPU.
+The first inference request loads all models into the GPU and may take several minutes.
 
 ## 4. Talk to it (on your laptop)
 In one terminal, open a tunnel to the server (keeps the server private — nothing is exposed to the internet):
@@ -57,13 +119,8 @@ python talk.py --lang hausa    # skip language detection
 ```
 macOS will ask for microphone permission for your terminal the first time.
 
-## 5. Build the test set
-Every turn is saved on the server in `server/logs/`: the input audio, the reply audio, and a row in `turns.jsonl` with the detected language, transcript, reply and per-stage timings. Aim for 20–30 turns per language, then have a native speaker score them (see PRD §7).
-
-Pull the logs down with:
-```bash
-scp -P <port> -r root@<gpu-host>:~/server/logs ./logs
-```
+## 5. Validate with learners
+Use [education_test_questions.md](education_test_questions.md) for educational tasks. Have native speakers and teachers assess usable transcripts, answer correctness, speech clarity and learning usefulness. Record actual target phone/browser combinations and connection failures. `test_questions.md` contains older general-assistant prompts and is retained for reference.
 
 ## Knobs (env vars on the server)
 | Var | Default | What |

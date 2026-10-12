@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#185b45"><meta name="description" content="Ask, listen and learn in your language. A simple Nigerian learning companion.">
+<title>Naija Learn · Learn in your language</title>
+<link rel="manifest" href="/static/manifest.json"><link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script>
+</head>
+<body><main>
+<header><span class="badge">NAIJA LEARN</span><span class="small">Your learning companion</span></header>
+<section class="intro"><p class="eyebrow">A little help. A new understanding.</p><h1>Ask in your language.<br>Learn at your pace.</h1><p>Explore a topic, try a question, or work through an answer. Speak or type to get started.</p></section>
+<p id="connection" class="notice" hidden>You are offline. You can read the starter lessons below. Connect to ask the tutor.</p>
+<section class="card" aria-labelledby="ask-title"><h2 id="ask-title">What would you like to learn?</h2>
+<form id="learn-form" action="/learn" method="post">
+<input type="hidden" name="format" value="html">
+<div class="fields"><div><label for="lang">Your language</label><select id="lang" name="lang"><option value="english">Nigerian English</option><option value="hausa">Hausa</option><option value="igbo">Igbo</option><option value="yoruba">Yoruba</option></select></div>
+<div><label for="level">Learning level</label><select id="level" name="level"><option value="primary">Primary school</option><option value="junior">Junior secondary</option><option value="everyday">Everyday learning</option></select></div>
+<div><label for="subject">Subject</label><select id="subject" name="subject"><option value="general">General learning</option><option value="maths">Mathematics</option><option value="english">English language</option><option value="science">Basic science</option><option value="social">Social studies</option></select></div>
+<div><label for="mode">Help me with</label><select id="mode" name="mode"><option value="explain">An explanation</option><option value="practice">A practice question</option><option value="check">Checking my answer</option></select></div></div>
+<div id="voice-tools" hidden><button id="record" class="voice" type="button">Record a question</button><p id="voice-help" class="small">Record up to 60 seconds. Choose the language you will speak.</p><label for="audio-file">Or upload a voice recording (up to 4 MB)</label><input id="audio-file" type="file" accept="audio/*"><button id="send-file" class="secondary" type="button">Send recording</button></div>
+<label for="question">Type your question</label><textarea id="question" name="question" rows="3" maxlength="1000" required placeholder="For example: Explain fractions using an orange."></textarea>
+<p class="small">Checking an answer? Include the original question and your attempt. Each request starts a new learning turn.</p>
+<div id="audio-option" hidden><label class="check"><input id="spoken" type="checkbox" checked> Include a spoken answer</label><p class="small">Turn this off to use less data and receive text only.</p></div>
+<button id="submit" type="submit">Ask the tutor</button>
+<noscript><p class="small">You can type a question here without JavaScript. Voice recording needs a supported browser.</p></noscript>
+</form><p id="status" role="status" aria-live="polite"></p>
+<section id="answer" class="answer" hidden tabindex="-1"><span class="eyebrow">LET’S LEARN</span><h3>Your answer</h3><p id="transcript" class="small"></p><p id="reply"></p><audio id="playback" controls preload="none" hidden></audio><p class="small">AI answers can contain mistakes. Check important facts with your teacher or learning materials.</p></section>
+</section>
+<p><a href="/lessons" accesskey="1">1 · Read lessons and try a quiz</a></p>
+<section class="lessons" aria-labelledby="lesson-title"><h2 id="lesson-title">Start with something small</h2><p class="small">These English starter lessons are available offline after your first visit on supported browsers.</p>
+<article><span class="eyebrow">MATHEMATICS</span><h3>A fraction is a part of a whole</h3><p>Cut one orange into four equal pieces. One piece is one quarter, written 1/4. Two pieces are 2/4, which is the same as one half.</p><p class="try">Try it: What fraction is three of the four pieces?</p></article>
+<article><span class="eyebrow">BASIC SCIENCE</span><h3>Plants need more than water</h3><p>Plants use light, water and carbon dioxide to make food. Their roots take in water and minerals from the soil.</p><p class="try">Try it: Why might a plant kept in a dark room grow poorly?</p></article>
+<article><span class="eyebrow">ENGLISH LANGUAGE</span><h3>A verb tells you what happens</h3><p>A verb can describe an action, such as read, walk or sing. In “Amina reads a book”, reads is the verb.</p><p class="try">Try it: Find the verb in “Chidi kicks the ball”.</p></article>
+</section><footer><p>Made for learning in Hausa, Igbo, Yoruba and Nigerian English.</p><p>Online answers and quiz submissions need an internet connection. Microphone access and app installation depend on your browser.</p><p>Questions and recordings are not stored by default. Do not include personal details.</p></footer>
+</main></body></html>
